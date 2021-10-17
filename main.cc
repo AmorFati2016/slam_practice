@@ -6,9 +6,18 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/calib3d.hpp>
 
-cv::Mat last_frame;
-cv::Mat last_keypts_desc;
-std::vector<cv::KeyPoint> last_keypts;
+struct Frame{
+// data
+    std::vector<cv::KeyPoint> vkey_pts_;
+    cv::Mat descriptors_;
+    cv::Mat rotate_;
+    cv::Mat trans_;
+    std::vector<cv::Point3f> vkey_pts_3d_;
+    std::vector<int> vkey_pts_visible_with_last_frame_;
+};
+
+std::vector<Frame> vframe;
+
 
 int main(int argc, char* argv[]) {
     std::cout<<" enter slam system "<<std::endl;
@@ -29,8 +38,8 @@ int main(int argc, char* argv[]) {
         std::stringstream ss;
         ss << str;
 
-        left_img_path.push_back(left_img_root + "/" + ss.str() + ".png");
-        right_img_path.push_back(right_img_root + "/" + ss.str() + ".png");
+        left_img_path.push_back(left_img_root + "/" + ss.str());
+        right_img_path.push_back(right_img_root + "/" + ss.str());
         }
     }
 
@@ -38,7 +47,6 @@ int main(int argc, char* argv[]) {
     // cv::Mat cam0 = cv::Mat::
 
     cv::Mat distCoeffs = (cv::Mat1f(4,1)<<0.0034823894022493434, 0.0007150348452162257, -0.0020532361418706202, 0.00020293673591811182);
-
     cv::Mat cameraMatrix = (cv::Mat1f(3,3)<<190.97847715128717, 0, 254.93170605935475, 0, 190.9733070521226, 256.8974428996504, 0, 0, 1);
 
 
@@ -49,13 +57,17 @@ int main(int argc, char* argv[]) {
     for(int img_id = 0; img_id < num_imgs; ++img_id) {
 
     std::cout<<"-- Load data ... "<<left_img_path[img_id]<<std::endl;
+    // frame
+
+    Frame frame;
+
     // data load
     left_img = cv::imread(left_img_path[img_id], 0);
     right_img = cv::imread(right_img_path[img_id], 0);
 
     cv::Mat left, right;
     cv::fisheye::undistortImage(left_img, left_img, cameraMatrix, distCoeffs, cameraMatrix, left_img.size());
-    cv::fisheye::undistortImage(right_img, right_img, cameraMatrix, distCoeffs, cameraMatrix, right_img.size());
+    // cv::fisheye::undistortImage(right_img, right_img, cameraMatrix, distCoeffs, cameraMatrix, right_img.size());
 
 
 
@@ -65,6 +77,10 @@ int main(int argc, char* argv[]) {
     std::vector<cv::KeyPoint> keypoints;
     cv::Mat keypoints_desc;
     detector->detectAndCompute(left_img, cv::Mat(), keypoints, keypoints_desc);
+    frame.vkey_pts_ = keypoints;
+    frame.descriptors_ = keypoints_desc.clone();
+    frame.vkey_pts_visible_with_last_frame_.resize(keypoints.size(), 0);
+    frame.vkey_pts_3d_.resize(keypoints.size(), cv::Point3f(0,0,0));
  
 
 
@@ -72,18 +88,18 @@ int main(int argc, char* argv[]) {
     cv::Mat keypoint_img;
     cv::drawKeypoints(left_img, keypoints, keypoint_img, cv::Scalar::all(-1), cv::DrawMatchesFlags::DEFAULT);
 
-     cv::imshow("KeyPoints Image", keypoint_img);
-    cv::waitKey(30);
-    continue;
     
     // feature match
     cv::Ptr<cv::DescriptorMatcher> matcher  = cv::DescriptorMatcher::create ( "BruteForce-Hamming" );
     std::vector<cv::Point2f> keypoints_curr, keypoints_last;
+
+    std::vector<int> cur_pts_id_with_last_last, last_pts_id_com_with_last_last;
+
     if (img_id == 0) {
 
     } else {
         std::vector<cv::DMatch> matches;
-        matcher->match(keypoints_desc, last_keypts_desc, matches);
+        matcher->match(keypoints_desc, vframe[img_id - 1].descriptors_, matches);
 
         double min_dist = 10000.0, max_dist = 0.0;
         for ( int i = 0; i < keypoints_desc.rows; i++ )
@@ -101,32 +117,73 @@ int main(int argc, char* argv[]) {
             {
                 good_matches.push_back(matches[i]);
                 keypoints_curr.push_back(keypoints[matches[i].trainIdx].pt);
-                keypoints_last.push_back(last_keypts[matches[i].queryIdx].pt);
+                frame.vkey_pts_visible_with_last_frame_[i] = 1;
+                keypoints_last.push_back(vframe[img_id - 1].vkey_pts_[matches[i].queryIdx].pt);
+                if (vframe[img_id - 1].vkey_pts_visible_with_last_frame_[matches[i].queryIdx]) {
+                    cur_pts_id_with_last_last.push(matches[i].trainIdx);
+                    last_pts_id_com_with_last_last.push(matches[i].queryIdx);
+                }
             }
         }
 
     }
 
-    // // save cur feature
-    // last_keypts=keypoints;
-    // last_keypts_desc = keypoints_desc.clone();
+  // save cur feature
+    last_keypts=keypoints;
+    last_keypts_desc = keypoints_desc.clone();
 
-    // if (img_id == 0) continue;
+    if (img_id == 0) {
+        frame.rotate_ = cv::Mat::eye(3,3,CV_32F);
+        frame.trans_ = cv::Mat::zeros(1,3, CV_32F);
+        continue;
+    }
+    std::cout<<"-- keypoints_curr "<<keypoints_curr.size()<<" keypoints_last "<<keypoints_last.size()<<std::endl;
+    cv::Mat E = cv::findEssentialMat(keypoints_curr, keypoints_last, cameraMatrix);
+  
 
-    // // pose estimate
-    // cv::Mat F = cv::findFundamentalMat(keypoints_curr, keypoints_last, cv::FM_RANSAC);
-    // std::cout<<"-- F "<<F<<std::endl;
-    // // pt3 = F*cv::Mat(pt3);
+    std::cout<<"-- EssentialMat "<<E<<std::endl;
 
-    // float z = F.at<double>(2,0) *pt3.x + F.at<double>(2,1) *pt3.y + F.at<double>(2,2) *pt3.z;
-    // float x = F.at<double>(0,0) *pt3.x + F.at<double>(0,1) *pt3.y + F.at<double>(0,2) *pt3.z;
-    // float y = F.at<double>(1,0) *pt3.x + F.at<double>(1,1) *pt3.y + F.at<double>(1,2) *pt3.z;
-    // pt3.x = x;
-    // pt3.y = y;
-    // pt3.z = z;
+     cv::Mat R, T;
+     cv::recoverPose(E, keypoints_curr, keypoints_last, R, T);
+     std::cout<<"-- R "<<R<<" T "<<T<<std::endl;
 
-    // cv::circle(screen, cv::Point2f(x/z, y/z) * 100, 3, cv::Scalar(255));
-    // cv::imshow("points", screen);
+    // compute 3d coordinate
+     if (img_id > 1) {
+         // search common pts in cur, last and lastlast
+         
+         for(int i = 0; i < vframe[img_id - 1].vkey_pts_.size(); ++i) {
+            int visbile = frame[img_id - 1].vkey_pts_visible_with_last_frame_[i];
+            // search common pts
+            if (visbile) {
+
+            }
+         }
+         E = cv::findEssentialMat(keypoints_curr, keypoints_last, cameraMatrix);
+         cv::recoverPose(E, keypoints_curr, keypoints_last, R, T);
+     }
+     if (img_id == 1) {
+        frame.rotate_ = R.clone();
+        frame.trans_ = T.clone();
+
+        // Create two relative pose
+        // P1 = K [  I    |   0  ]
+        // P2 = K [R{1,2} | {+-}t]
+        cv::Mat proj_ref, proj_cur;
+        hconcat(cameraMatrix, Vec3d::zeros(), proj_ref);
+        hconcat(cameraMatrix * R, cameraMatrix * T, proj_cur);
+        std::vector<cv::Point3f> proj_pts;
+        cv::triangulatePoints(proj_ref, proj_cur, keypoints_last, keypoints_curr, proj_pts);
+        for(auto pt : &proj_pts) 
+           pt /=pt(3);
+        continue;
+     } else if (img_id > 1) {
+
+     }
+
+
+    cv::imshow("KeyPoints Image", keypoint_img);
+    cv::waitKey(30);
+
     }
 
     // 3. end
