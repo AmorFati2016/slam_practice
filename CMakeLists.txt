@@ -8,5 +8,18 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 find_package(Ceres REQUIRED)
 include_directories(${CERES_INCLUDE_DIRS})
 include_directories(include/)
+
+# 增加PCL库的依赖
+FIND_PACKAGE( PCL REQUIRED )
+
+list(REMOVE_ITEM PCL_LIBRARIES "vtkproj4") # use this in Ubuntu 16.04
+# 增加opencv的依赖
+FIND_PACKAGE( OpenCV REQUIRED )
+
+# 添加头文件和库文件
+ADD_DEFINITIONS( ${PCL_DEFINITIONS} )
+INCLUDE_DIRECTORIES( ${PCL_INCLUDE_DIRS}  )
+LINK_LIBRARIES( ${PCL_LIBRARY_DIRS} )
+
 add_executable(slam_demo main.cc)
-target_link_libraries(slam_demo ${OpenCV_OK} ${CERES_LIBRARIES})
+target_link_libraries(slam_demo ${OpenCV_OK} ${CERES_LIBRARIES} ${PCL_LIBRARIES})

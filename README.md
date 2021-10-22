@@ -1,7 +1,15 @@
 
 slam, simultaneous localization and mapping
 
-- load image
+- Environment config
+  - Ubuntu 18.04 / Macbook
+  - [OpenCV 4.5.2](https://github.com/opencv/opencv/tree/4.5.2)
+  - [OpenCV Contrib 4.5.2](https://github.com/opencv/opencv_contrib/tree/4.5.2)
+  - [Ceres 2.0.0](http://www.ceres-solver.org/installation.html)
+
+SLAM
+
+- sensors 
   - mono
   - bin
   - rgbd
