@@ -7,9 +7,9 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/calib3d.hpp>
 #include <opencv2/optflow.hpp>
-#include <pcl/io/pcd_io.h>
 #include <pcl/point_types.h>
-
+#include <pcl/io/pcd_io.h>
+#include <pcl/visualization/cloud_viewer.h>
 struct Frame{
 // data
     std::vector<cv::KeyPoint> vkey_pts_;
@@ -22,9 +22,143 @@ struct Frame{
 
 std::vector<Frame> vframe;
 cv::Mat last_image;
+pcl::PointCloud<pcl::PointXYZRGBA>::Ptr DepthToPointCloud(const cv::Mat &depth, const cv::Mat rgb, const cv::Mat camera_matrix, float sensor_scale) {
+   // 
+   float cx = camera_matrix.at<float>(0,2);
+   float cy = camera_matrix.at<float>(1,2);
+   float fx = camera_matrix.at<float>(0,0);
+   float fy = camera_matrix.at<float>(1,1);
 
+   using cloud_type = pcl::PointCloud<pcl::PointXYZRGBA>;
+   cloud_type::Ptr point_cloud (new cloud_type);
+   for(auto y = 0; y < depth.rows; ++y) {
+       const ushort *pd = depth.ptr<ushort>(y);
+       const cv::Vec3b* pc = rgb.ptr<cv::Vec3b>(y);
+       for(auto x = 0; x < depth.cols; ++x) {
+           float zw = pd[x] * sensor_scale;
+           float xw = (x - cx) * zw/fx;
+           float yw = (y - cy) * zw/fy;
+
+           cloud_type::PointType pt;
+           pt.x = xw;
+           pt.y = yw;
+           pt.z = zw;
+           pt.r = pc[x][0];
+           pt.g = pc[x][1];
+           pt.b = pc[x][2];
+          
+          point_cloud->push_back(pt);
+           
+       }
+   }
+   point_cloud->height = 1;
+   point_cloud->width = point_cloud->size();
+   return point_cloud;
+}
+const double camera_factor = 1000;
+const double camera_cx = 325.5;
+const double camera_cy = 253.5;
+const double camera_fx = 518.0;
+const double camera_fy = 519.0;
 
 int main(int argc, char* argv[]) {
+
+    std::string root_path = "/Users/payne/Desktop/project/code/slam_practice/data/rgbd";
+
+    // show
+    // pcl::visualization::CloudViewer::Ptr cloud_viewer(new pcl::visualization::CloudViewer("viewer"));
+    cv::Mat last_rgb;
+    cv::Mat last_kps_desc;
+    cv::Mat last_depth;
+    std::vector<cv::KeyPoint> last_kps;
+    for(auto img_id = 1; img_id < 100; ++img_id) {
+        cv::Mat depth = cv::imread(root_path +"/depth_png/"+std::to_string(img_id)+".png", -1);
+        cv::Mat rgb = cv::imread(root_path + "/rgb_png/"+std::to_string(img_id)+".png", 1);
+        std::cout<<"-- load rgb data "<<depth.size()<<" type "<<depth.type()<<" "<<rgb.size()<<std::endl;
+
+        cv::Mat camera_matrix = (cv::Mat_<float>(3,3)<<camera_fx,0, camera_cx, 0, camera_fy, camera_cy, 0, 0, 1);
+        using cloud_type = pcl::PointCloud<pcl::PointXYZRGBA>;
+        cloud_type::Ptr point_cloud = DepthToPointCloud(depth, rgb, camera_matrix, camera_factor);
+        // pcl::io::savePCDFile("point_cloud.pcd", *point_cloud);
+
+        // feature detection
+        std::vector<cv::KeyPoint> keypoints;
+        cv::Mat keypoints_desc;
+        cv::Ptr<cv::SIFT> detector = cv::SIFT::create(0, 3, 0.01, 100, 1.6, CV_32F);
+        detector->detectAndCompute(rgb, cv::Mat(), keypoints, keypoints_desc);
+        std::cout<<"-- feature detect done. keypoint size "<<keypoints.size()<<std::endl;
+
+        // feature match
+        if (img_id == 1) {
+           last_rgb = rgb.clone();
+           last_kps_desc = keypoints_desc;
+           last_kps = keypoints;
+           last_depth = depth.clone();
+        } else {
+
+        // feature match
+        // feature match
+        cv::Ptr<cv::DescriptorMatcher> matcher  = cv::DescriptorMatcher::create ( "BruteForce" );
+        std::vector<cv::Point2f> keypoints_curr, keypoints_last;
+
+            std::vector<std::vector<cv::DMatch>> matches;
+            matcher->knnMatch(keypoints_desc, last_kps_desc, matches, 2);
+
+            double min_dist = 10000.0, max_dist = 0.0;
+            
+            for ( int i = 0; i < matches.size(); i++ )
+            {
+                if (matches[i][0].distance >0.6 * matches[i][1].distance) continue;
+                double dist = matches[i][0].distance;
+                if ( dist < min_dist ) min_dist = dist;
+                if ( dist > max_dist ) max_dist = dist;
+            }
+
+            std::cout<<"-- matches "<<matches.size()<<" min_dist "<<min_dist<<" max_dist "<<max_dist<<std::endl;
+            std::vector<cv::DMatch> good_matches;
+
+            // 
+            for ( int i = 0; i < matches.size(); i++)
+            {
+                if (matches[i][0].distance >0.6 * matches[i][1].distance) continue;
+                if(matches[i][0].distance <= 5 * min_dist)
+                {
+                    good_matches.push_back(matches[i][0]);
+                    keypoints_curr.push_back(keypoints[matches[i][0].queryIdx].pt);
+                    keypoints_last.push_back(last_kps[matches[i][0].trainIdx].pt);
+                }
+            }
+        
+        std::cout<<"-- sift match done. good match size "<<good_matches.size()<<std::endl;
+
+           // keypoint 3d to 2d
+           std::vector<cv::Point3f> last_kps_3d;
+           for(auto pt : keypoints_last) {
+           float zw = last_depth.ptr<ushort>(int(pt.y))[int(pt.x)] * camera_factor;
+           float xw = (pt.x - camera_cx) * zw/camera_fx;
+           float yw = (pt.y - camera_cy) * zw/camera_fy;
+           last_kps_3d.push_back(cv::Point3f(xw, yw, zw));
+           }
+
+           cv::Mat R, T;
+           int ret = cv::solvePnPRansac(last_kps_3d, keypoints_curr, camera_matrix, cv::Mat(), R, T);
+           std::cout<<"-- solvePnPRansac rvec, tvec "<<R<<" "<<T<<std::endl;
+           last_rgb = rgb.clone();
+           last_kps_desc = keypoints_desc;
+           last_kps = keypoints;
+
+        }
+        
+    
+    }
+
+    // show
+
+    // pnp
+
+
+    return 1;
+/*
 
     // 1. load image names
     std::vector<std::string> left_img_path, right_img_path;
@@ -197,4 +331,5 @@ int main(int argc, char* argv[]) {
 
     // 3. end
     // std::cout<<"-- shutdown"<<std::endl;
+    */
 }
