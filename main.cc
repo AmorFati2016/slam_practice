@@ -10,6 +10,8 @@
 #include <pcl/point_types.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/visualization/cloud_viewer.h>
+#include <pcl/common/transforms.h>
+
 struct Frame{
 // data
     std::vector<cv::KeyPoint> vkey_pts_;
@@ -63,7 +65,7 @@ const double camera_fy = 519.0;
 
 int main(int argc, char* argv[]) {
 
-    std::string root_path = "/Users/payne/Desktop/project/code/slam_practice/data/rgbd";
+    std::string root_path = "/Users/payne/Desktop/project/code/slam_practice/data";
 
     // show
     // pcl::visualization::CloudViewer::Ptr cloud_viewer(new pcl::visualization::CloudViewer("viewer"));
@@ -71,7 +73,8 @@ int main(int argc, char* argv[]) {
     cv::Mat last_kps_desc;
     cv::Mat last_depth;
     std::vector<cv::KeyPoint> last_kps;
-    for(auto img_id = 1; img_id < 100; ++img_id) {
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr last_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
+    for(auto img_id = 1; img_id < 20; ++img_id) {
         cv::Mat depth = cv::imread(root_path +"/depth_png/"+std::to_string(img_id)+".png", -1);
         cv::Mat rgb = cv::imread(root_path + "/rgb_png/"+std::to_string(img_id)+".png", 1);
         std::cout<<"-- load rgb data "<<depth.size()<<" type "<<depth.type()<<" "<<rgb.size()<<std::endl;
@@ -94,6 +97,7 @@ int main(int argc, char* argv[]) {
            last_kps_desc = keypoints_desc;
            last_kps = keypoints;
            last_depth = depth.clone();
+           *last_point_cloud = *point_cloud;
         } else {
 
         // feature match
@@ -142,7 +146,26 @@ int main(int argc, char* argv[]) {
 
            cv::Mat R, T;
            int ret = cv::solvePnPRansac(last_kps_3d, keypoints_curr, camera_matrix, cv::Mat(), R, T);
-           std::cout<<"-- solvePnPRansac rvec, tvec "<<R<<" "<<T<<std::endl;
+
+           cv::Mat r;
+           cv::Rodrigues(R, r);
+           Eigen::Matrix4d transform_1 = Eigen::Matrix4d::Identity();
+           for(int i = 0; i < 3; ++i) {
+               for(int j = 0; j < 3; ++j) {
+                   transform_1(i,j) = r.at<double>(i,j);
+               }
+           }
+           transform_1(0,3)=T.at<double>(0,0);
+           transform_1(1,3)=T.at<double>(1,0);
+           transform_1(2,3)=T.at<double>(2,0);
+           std::cout<<"-- solvePnPRansac rvec, tvec "<<transform_1<<std::endl;
+
+           //
+           pcl::PointCloud<pcl::PointXYZRGBA>::Ptr new_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
+           pcl::transformPointCloud(*last_point_cloud, *new_point_cloud, transform_1);
+           *point_cloud += *new_point_cloud;
+           *last_point_cloud = *point_cloud;
+           
            last_rgb = rgb.clone();
            last_kps_desc = keypoints_desc;
            last_kps = keypoints;
@@ -151,6 +174,9 @@ int main(int argc, char* argv[]) {
         
     
     }
+
+        pcl::io::savePCDFile("point_cloud.pcd", *last_point_cloud);
+
 
     // show
 
