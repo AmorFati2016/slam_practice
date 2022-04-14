@@ -7,13 +7,14 @@ add_definitions(-std=c++11)
 
 find_package(OpenCV REQUIRED)
 include_directories(${OpenCV_INCLUDE_DIRS})
-find_package(Ceres REQUIRED)
-include_directories(${CERES_INCLUDE_DIRS})
+#find_package(Ceres REQUIRED)
+#include_directories(${CERES_INCLUDE_DIRS})
 include_directories(include/)
 
 # 增加PCL库的依赖
 set(CMAKE_PREFIX_PATH ${CMAKE_PREFIX_PATH} "/usr/local/Cellar/qt@5/5.15.2_1/lib/cmake/Qt5")
-FIND_PACKAGE( PCL 1.12 REQUIRED COMPONENTS common io)
+#FIND_PACKAGE( PCL REQUIRED COMPONENTS common io visualization filter)
+FIND_PACKAGE( PCL REQUIRED)
 
 #list(REMOVE_ITEM PCL_LIBRARIES "vtkproj4") # use this in Ubuntu 16.04
 
@@ -23,4 +24,5 @@ INCLUDE_DIRECTORIES( ${PCL_INCLUDE_DIRS}  )
 LINK_LIBRARIES( ${PCL_LIBRARY_DIRS} )
 
 add_executable(slam_demo main.cc)
-target_link_libraries(slam_demo ${OpenCV_OK} ${CERES_LIBRARIES} ${PCL_LIBRARIES})
+#target_link_libraries(slam_demo ${OpenCV_OK} ${CERES_LIBRARIES} ${PCL_LIBRARIES})
+target_link_libraries(slam_demo ${OpenCV_OK} ${PCL_LIBRARIES})

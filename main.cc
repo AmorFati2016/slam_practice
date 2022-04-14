@@ -11,6 +11,7 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl/visualization/cloud_viewer.h>
 #include <pcl/common/transforms.h>
+#include <pcl/filters/voxel_grid.h>
 
 struct Frame{
 // data
@@ -65,16 +66,16 @@ const double camera_fy = 519.0;
 
 int main(int argc, char* argv[]) {
 
-    std::string root_path = "/Users/payne/Desktop/project/code/slam_practice/data";
+    std::string root_path = "/home/wangpeng04/work/slam/slam_practice/data";
 
     // show
-    // pcl::visualization::CloudViewer::Ptr cloud_viewer(new pcl::visualization::CloudViewer("viewer"));
+    pcl::visualization::CloudViewer* cloud_viewer(new pcl::visualization::CloudViewer("viewer"));
     cv::Mat last_rgb;
     cv::Mat last_kps_desc;
     cv::Mat last_depth;
     std::vector<cv::KeyPoint> last_kps;
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr last_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
-    for(auto img_id = 1; img_id < 20; ++img_id) {
+    for(auto img_id = 1; img_id < 100; ++img_id) {
         cv::Mat depth = cv::imread(root_path +"/depth_png/"+std::to_string(img_id)+".png", -1);
         cv::Mat rgb = cv::imread(root_path + "/rgb_png/"+std::to_string(img_id)+".png", 1);
         std::cout<<"-- load rgb data "<<depth.size()<<" type "<<depth.type()<<" "<<rgb.size()<<std::endl;
@@ -95,7 +96,8 @@ int main(int argc, char* argv[]) {
         if (img_id == 1) {
            last_rgb = rgb.clone();
            last_kps_desc = keypoints_desc;
-           last_kps = keypoints;
+        //    last_kps = keypoints;
+           last_kps.swap(keypoints);
            last_depth = depth.clone();
            *last_point_cloud = *point_cloud;
         } else {
@@ -105,43 +107,49 @@ int main(int argc, char* argv[]) {
         cv::Ptr<cv::DescriptorMatcher> matcher  = cv::DescriptorMatcher::create ( "BruteForce" );
         std::vector<cv::Point2f> keypoints_curr, keypoints_last;
 
-            std::vector<std::vector<cv::DMatch>> matches;
-            matcher->knnMatch(keypoints_desc, last_kps_desc, matches, 2);
+        std::vector<std::vector<cv::DMatch>> matches;
+        matcher->knnMatch(keypoints_desc, last_kps_desc, matches, 2);
 
-            double min_dist = 10000.0, max_dist = 0.0;
-            
-            for ( int i = 0; i < matches.size(); i++ )
-            {
-                if (matches[i][0].distance >0.6 * matches[i][1].distance) continue;
-                double dist = matches[i][0].distance;
-                if ( dist < min_dist ) min_dist = dist;
-                if ( dist > max_dist ) max_dist = dist;
-            }
-
-            std::cout<<"-- matches "<<matches.size()<<" min_dist "<<min_dist<<" max_dist "<<max_dist<<std::endl;
-            std::vector<cv::DMatch> good_matches;
-
-            // 
-            for ( int i = 0; i < matches.size(); i++)
-            {
-                if (matches[i][0].distance >0.6 * matches[i][1].distance) continue;
-                if(matches[i][0].distance <= 5 * min_dist)
-                {
-                    good_matches.push_back(matches[i][0]);
-                    keypoints_curr.push_back(keypoints[matches[i][0].queryIdx].pt);
-                    keypoints_last.push_back(last_kps[matches[i][0].trainIdx].pt);
-                }
-            }
+        double min_dist = 10000.0, max_dist = 0.0;
         
-        std::cout<<"-- sift match done. good match size "<<good_matches.size()<<std::endl;
+        for ( int i = 0; i < matches.size(); i++ )
+        {
+            if (matches[i][0].distance >0.6 * matches[i][1].distance) continue;
+            double dist = matches[i][0].distance;
+            if ( dist < min_dist ) min_dist = dist;
+            if ( dist > max_dist ) max_dist = dist;
+        }
+
+        std::cout<<"-- matches "<<matches.size()<<" min_dist "<<min_dist<<" max_dist "<<max_dist<<std::endl;
+        std::vector<cv::DMatch> good_matches;
+
+        // 
+        for ( int i = 0; i < matches.size(); i++)
+        {
+            if (matches[i][0].distance >0.6 * matches[i][1].distance) continue;
+            if(matches[i][0].distance <= 5 * min_dist)
+            {
+                good_matches.push_back(matches[i][0]);
+                keypoints_curr.push_back(keypoints[matches[i][0].queryIdx].pt);
+                keypoints_last.push_back(last_kps[matches[i][0].trainIdx].pt);
+            }
+        }
+    
+        std::cout<<"-- last kps.size() "<<last_kps.size()<<" cur.size "<<keypoints.size()<<" good match.size() "<<good_matches.size()<<std::endl;
+        //    cv::Mat out;
+        //    cv::drawMatches(rgb, keypoints, last_rgb, last_kps, good_matches, out);
+        //    cv::imshow("match", out);
+        //    cv::waitKey(-1);
+           std::cout<<"-- sift match done. good match size "<<good_matches.size()<<std::endl;
 
            // keypoint 3d to 2d
            std::vector<cv::Point3f> last_kps_3d;
            for(auto pt : keypoints_last) {
-           float zw = last_depth.ptr<ushort>(int(pt.y))[int(pt.x)] * camera_factor;
+           float zw = last_depth.ptr<ushort>(int(pt.y))[int(pt.x)]/ camera_factor;
            float xw = (pt.x - camera_cx) * zw/camera_fx;
            float yw = (pt.y - camera_cy) * zw/camera_fy;
            last_kps_3d.push_back(cv::Point3f(xw, yw, zw));
+        //    std::cout<<"-- "<<xw<<" "<<yw<<" "<<zw<<std::endl;
            }
 
            cv::Mat R, T;
@@ -160,6 +168,16 @@ int main(int argc, char* argv[]) {
            transform_1(2,3)=T.at<double>(2,0);
            std::cout<<"-- solvePnPRansac rvec, tvec "<<transform_1<<std::endl;
 
+
+        pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_filtered (new pcl::PointCloud<pcl::PointXYZRGBA>());
+       
+         // Create the filtering object
+         pcl::VoxelGrid<pcl::PointXYZRGBA> sor;
+         sor.setInputCloud (point_cloud);
+         sor.setLeafSize (0.3f, 0.3f, 0.3f);
+         sor.filter (*cloud_filtered);
+         *point_cloud = *cloud_filtered;
+
            //
            pcl::PointCloud<pcl::PointXYZRGBA>::Ptr new_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
            pcl::transformPointCloud(*last_point_cloud, *new_point_cloud, transform_1);
@@ -169,13 +187,14 @@ int main(int argc, char* argv[]) {
            last_rgb = rgb.clone();
            last_kps_desc = keypoints_desc;
            last_kps = keypoints;
+           cloud_viewer->showCloud(last_point_cloud);
 
         }
         
     
     }
 
-        pcl::io::savePCDFile("point_cloud.pcd", *last_point_cloud);
+        // pcl::io::savePCDFile("point_cloud.pcd", *last_point_cloud);
 
 
     // show
