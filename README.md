@@ -9,33 +9,16 @@ slam, simultaneous localization and mapping
 
 SLAM
 
-- sensors 
-  - mono
-  - bin
-  - rgbd
-  - lidar
-- feature detection
-  - orb
-  - sift
-  - surf
-- feature matching
-- pose estimation
-  - Fundmental
-  - EnssentialMatrix
-  - R&T
-  - traingle
-  - 
-- mapping
+- 3D from
 
-
+The normalized 8-point algorithm
+```math
+x_2Fx_1=0
+```
 ```puml
 @startuml
-:seneor;
-:localization;
-:image;
-:feature detection;
-:feature matching;
-:pose estimate;
-:mapping;
+:GetData;
+:EstimateTransformMatrix;
+:BuildMap
 @enduml
 ```
