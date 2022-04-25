@@ -12,8 +12,9 @@
 #include <pcl/visualization/cloud_viewer.h>
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
+#include <pcl/registration/icp.h>
 
-std::string root_path = "/home/wangpeng04/work/slam/slam_practice/data";
+std::string root_path = "/Users/payne/Desktop/project/code/slam_practice/data";
 
 
 struct Frame{
@@ -133,11 +134,11 @@ int main(int argc, char* argv[]) {
     cv::Mat camera_matrix = (cv::Mat_<float>(3,3)<<camera_fx,0, camera_cx, 0, camera_fy, camera_cy, 0, 0, 1);
 
     // show
-    pcl::visualization::CloudViewer* cloud_viewer(new pcl::visualization::CloudViewer("viewer"));
+    // pcl::visualization::CloudViewer* cloud_viewer(new pcl::visualization::CloudViewer("viewer"));
     FRAME frame_cur, frame_last;
     std::vector<cv::KeyPoint> last_kps;
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr last_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
-    for(auto img_id = 1; img_id < 100; ++img_id) {
+    for(auto img_id = 1; img_id < 3; ++img_id) {
 
 
         LoadData(img_id, &frame_cur);
@@ -148,8 +149,10 @@ int main(int argc, char* argv[]) {
 
         // feature match
         if (img_id == 1) {
+            frame_last = frame_cur;
             frame_last.img_kpt_desc = img_kpt_desc.clone();
             frame_last.img_kpt.swap(img_kpt);
+
            *last_point_cloud = *point_cloud;
         } else {
 
@@ -167,10 +170,10 @@ int main(int argc, char* argv[]) {
             last_kps_3d.push_back(cv::Point3f(xw, yw, zw));
         }
 
+        std::cout<<"-- Pose Estimate "<<std::endl;
         // pose estimate
         cv::Mat R, T;
         int ret = cv::solvePnPRansac(last_kps_3d, keypoints_curr, camera_matrix, cv::Mat(), R, T);
-
         cv::Mat r;
         cv::Rodrigues(R, r);
         Eigen::Matrix4d transform_1 = Eigen::Matrix4d::Identity();
@@ -182,7 +185,26 @@ int main(int argc, char* argv[]) {
         transform_1(0,3)=T.at<double>(0,0);
         transform_1(1,3)=T.at<double>(1,0);
         transform_1(2,3)=T.at<double>(2,0);
-        std::cout<<"-- solvePnPRansac rvec, tvec "<<transform_1<<std::endl;
+        // std::cout<<"-- solvePnPRansac rvec, tvec "<<transform_1<<std::endl;
+        std::cout<<"-- 3d-2d estimate "<<" "<<r<<" "<<T<<std::endl;       
+
+        // 2d - 2d
+        cv::Mat mask, R2d, T2d;
+        cv::Mat E = cv::findEssentialMat(keypoints_curr, keypoints_last, camera_matrix, cv::RANSAC, 0.999, 1.0, 1000, mask);
+        cv::recoverPose(E, keypoints_curr, keypoints_last, camera_matrix, R2d, T2d);
+        std::cout<<"-- 2d-2d estimate "<<R2d<<" "<<T2d<<std::endl;
+
+       // 3d - 3d
+        pcl::IterativeClosestPoint<pcl::PointXYZRGBA, pcl::PointXYZRGBA> icp;
+        icp.setInputSource(last_point_cloud);
+        icp.setInputTarget(point_cloud);
+        
+        pcl::PointCloud<pcl::PointXYZRGBA> Final;
+        icp.align(Final);
+      
+        std::cout << "has converged:" << icp.hasConverged() << " score: " <<
+        icp.getFitnessScore() << std::endl;
+        std::cout << icp.getFinalTransformation() << std::endl;
 
 
         // point cloud transform
@@ -201,12 +223,10 @@ int main(int argc, char* argv[]) {
         *point_cloud += *new_point_cloud;
         *last_point_cloud = *point_cloud;
         
-        frame_last.img_rgb = rgb.clone();
         frame_last.img_kpt_desc = img_kpt_desc.clone();
-        frame_last.img_depth = depth.clone();
         frame_last.img_kpt.swap(img_kpt);
 
-        cloud_viewer->showCloud(last_point_cloud);
+        // cloud_viewer->showCloud(last_point_cloud);
 
         }
         
