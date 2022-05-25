@@ -14,7 +14,22 @@
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/registration/icp.h>
 
-std::string root_path = "/Users/payne/Desktop/project/code/slam_practice/data";
+// g2o
+#include "g2o/core/block_solver.h"
+#include "g2o/core/factory.h"
+#include "g2o/core/optimization_algorithm_gauss_newton.h"
+#include "g2o/core/optimization_algorithm_levenberg.h"
+#include "g2o/core/robust_kernel_impl.h"
+#include "g2o/core/solver.h"
+#include "g2o/core/sparse_optimizer.h"
+#include "g2o/solvers/dense/linear_solver_dense.h"
+#include "g2o/solvers/eigen/linear_solver_eigen.h"
+#include "g2o/types/sim3/types_seven_dof_expmap.h"
+#include "g2o/types/slam3d/edge_se3.h"
+#include "g2o/types/slam3d/types_slam3d.h"
+#include "g2o/types/slam3d/vertex_se3.h"
+
+std::string root_path = "/home/wangpeng04/work/slam/slam_practice/data";
 
 
 struct Frame{
@@ -205,17 +220,64 @@ void LoadData(int img_id, FRAME *frame){
         frame->img_depth = depth.clone();
         std::cout<<"-- load rgb data "<<depth.size()<<" type "<<depth.type()<<" "<<rgb.size()<<std::endl;
 }
+// 估计一个运动的大小
+double normofTransform( cv::Mat rvec, cv::Mat tvec );
+// 检测两个帧，结果定义
+enum CHECK_RESULT {NOT_MATCHED=0, TOO_FAR_AWAY, TOO_CLOSE, KEYFRAME}; 
+// 函数声明
+CHECK_RESULT checkKeyframes( FRAME& f1, FRAME& f2, g2o::SparseOptimizer& opti, bool is_loops=false );
+
 int main(int argc, char* argv[]) {
     
     using cloud_type = pcl::PointCloud<pcl::PointXYZRGBA>;
     cv::Mat camera_matrix = (cv::Mat_<float>(3,3)<<camera_fx,0, camera_cx, 0, camera_fy, camera_cy, 0, 0, 1);
+
+    int start_index = 1;
 
     // show
     // pcl::visualization::CloudViewer* cloud_viewer(new pcl::visualization::CloudViewer("viewer"));
     FRAME frame_cur, frame_last;
     std::vector<cv::KeyPoint> last_kps;
     pcl::PointCloud<pcl::PointXYZRGBA>::Ptr last_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
-    for(auto img_id = 1; img_id < 3; ++img_id) {
+
+
+
+    LoadData(start_index, &frame_cur);
+    cloud_type::Ptr point_cloud = DepthToPointCloud(frame_cur.img_depth, frame_cur.img_rgb, camera_matrix, camera_factor);
+    cv::Mat img_kpt_desc;
+    std::vector<cv::KeyPoint> img_kpt;
+    FeaturesDection(frame_cur.img_rgb, &img_kpt_desc, &img_kpt);
+
+
+    frame_last = frame_cur;
+    frame_last.img_kpt_desc = img_kpt_desc.clone();
+    frame_last.img_kpt.swap(img_kpt);
+
+    *last_point_cloud = *point_cloud;
+
+
+    /******************************* 
+    // 新增:有关g2o的初始化
+    *******************************/
+    //  define the optimizer
+    typedef g2o::BlockSolver<g2o::BlockSolverTraits<6, 3>> BlockSolverType;
+    typedef g2o::LinearSolverEigen<BlockSolverType::PoseMatrixType> LinearSolverType;
+    auto solver = new g2o::OptimizationAlgorithmLevenberg(
+        g2o::make_unique<BlockSolverType>(g2o::make_unique<LinearSolverType>()));
+
+    g2o::SparseOptimizer globalOptimizer;  // 最后用的就是这个东东
+    globalOptimizer.setAlgorithm( solver ); 
+    // 不要输出调试信息
+    globalOptimizer.setVerbose( false );
+    
+    // 向globalOptimizer增加第一个顶点
+    g2o::VertexSE3* v = new g2o::VertexSE3();
+    v->setId( start_index );
+    v->setEstimate( Eigen::Isometry3d::Identity() ); //估计为单位矩阵
+    v->setFixed( true ); //第一个顶点固定，不用优化
+    globalOptimizer.addVertex( v );
+
+    for(auto img_id = start_index + 1; img_id < 30; ++img_id) {
 
 
         LoadData(img_id, &frame_cur);
@@ -224,17 +286,9 @@ int main(int argc, char* argv[]) {
         std::vector<cv::KeyPoint> img_kpt;
         FeaturesDection(frame_cur.img_rgb, &img_kpt_desc, &img_kpt);
 
+
+        std::cout<<"-- cur "<<img_kpt.size()<<" last "<<frame_last.img_kpt.size()<<std::endl;
         // feature match
-        if (img_id == 1) {
-            frame_last = frame_cur;
-            frame_last.img_kpt_desc = img_kpt_desc.clone();
-            frame_last.img_kpt.swap(img_kpt);
-
-           *last_point_cloud = *point_cloud;
-        } else {
-
-        // feature match
-
         std::vector<cv::Point2f> keypoints_curr, keypoints_last;
         FeaturesMatching(img_kpt, img_kpt_desc, frame_last.img_kpt, frame_last.img_kpt_desc, &keypoints_curr, &keypoints_last);
 
@@ -265,47 +319,47 @@ int main(int argc, char* argv[]) {
         // std::cout<<"-- solvePnPRansac rvec, tvec "<<transform_1<<std::endl;
         std::cout<<"-- 3d-2d estimate "<<" "<<r<<" "<<T<<std::endl;       
 
-        // 2d - 2d
-        cv::Mat mask, R2d, T2d;
-        cv::Mat E = cv::findEssentialMat(keypoints_curr, keypoints_last, camera_matrix, cv::RANSAC, 0.999, 1.0, 1000, mask);
-        cv::recoverPose(E, keypoints_curr, keypoints_last, camera_matrix, R2d, T2d);
-        std::cout<<"-- 2d-2d estimate "<<R2d<<" "<<T2d<<std::endl;
+    //     // 2d - 2d
+    //     cv::Mat mask, R2d, T2d;
+    //     cv::Mat E = cv::findEssentialMat(keypoints_curr, keypoints_last, camera_matrix, cv::RANSAC, 0.999, 1.0, 1000, mask);
+    //     cv::recoverPose(E, keypoints_curr, keypoints_last, camera_matrix, R2d, T2d);
+    //     std::cout<<"-- 2d-2d estimate "<<R2d<<" "<<T2d<<std::endl;
 
-       // 3d - 3d
-        pcl::IterativeClosestPoint<pcl::PointXYZRGBA, pcl::PointXYZRGBA> icp;
-        icp.setInputSource(last_point_cloud);
-        icp.setInputTarget(point_cloud);
+    //    // 3d - 3d
+    //     pcl::IterativeClosestPoint<pcl::PointXYZRGBA, pcl::PointXYZRGBA> icp;
+    //     icp.setInputSource(last_point_cloud);
+    //     icp.setInputTarget(point_cloud);
         
-        pcl::PointCloud<pcl::PointXYZRGBA> Final;
-        icp.align(Final);
+    //     pcl::PointCloud<pcl::PointXYZRGBA> Final;
+    //     icp.align(Final);
       
-        std::cout << "has converged:" << icp.hasConverged() << " score: " <<
-        icp.getFitnessScore() << std::endl;
-        std::cout << icp.getFinalTransformation() << std::endl;
+    //     std::cout << "has converged:" << icp.hasConverged() << " score: " <<
+    //     icp.getFitnessScore() << std::endl;
+    //     std::cout << icp.getFinalTransformation() << std::endl;
 
 
-        // point cloud transform
-        pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_filtered (new pcl::PointCloud<pcl::PointXYZRGBA>());
+        // // point cloud transform
+        // pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_filtered (new pcl::PointCloud<pcl::PointXYZRGBA>());
        
-         // Create the filtering object
-         pcl::VoxelGrid<pcl::PointXYZRGBA> sor;
-         sor.setInputCloud (point_cloud);
-         sor.setLeafSize (0.3f, 0.3f, 0.3f);
-         sor.filter (*cloud_filtered);
-         *point_cloud = *cloud_filtered;
+        //  // Create the filtering object
+        //  pcl::VoxelGrid<pcl::PointXYZRGBA> sor;
+        //  sor.setInputCloud (point_cloud);
+        //  sor.setLeafSize (0.3f, 0.3f, 0.3f);
+        //  sor.filter (*cloud_filtered);
+        //  *point_cloud = *cloud_filtered;
 
-        //
-        pcl::PointCloud<pcl::PointXYZRGBA>::Ptr new_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
-        pcl::transformPointCloud(*last_point_cloud, *new_point_cloud, transform_1);
-        *point_cloud += *new_point_cloud;
-        *last_point_cloud = *point_cloud;
+        // //
+        // pcl::PointCloud<pcl::PointXYZRGBA>::Ptr new_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
+        // pcl::transformPointCloud(*last_point_cloud, *new_point_cloud, transform_1);
+        // *point_cloud += *new_point_cloud;
+        // *last_point_cloud = *point_cloud;
         
+        frame_last = frame_cur;
         frame_last.img_kpt_desc = img_kpt_desc.clone();
         frame_last.img_kpt.swap(img_kpt);
+        // frame_last.img_kpt.swap(img_kpt);
 
         // cloud_viewer->showCloud(last_point_cloud);
-
-        }
         
     
     }
@@ -319,4 +373,72 @@ int main(int argc, char* argv[]) {
 
 
     return 1;
+}
+
+
+double normofTransform( cv::Mat rvec, cv::Mat tvec )
+{
+    return fabs(min(cv::norm(rvec), 2*M_PI-cv::norm(rvec)))+ fabs(cv::norm(tvec));
+}
+
+
+CHECK_RESULT checkKeyframes( FRAME& f1, FRAME& f2, g2o::SparseOptimizer& opti, bool is_loops)
+{
+    static ParameterReader pd;
+    static int min_inliers = atoi( pd.getData("min_inliers").c_str() );
+    static double max_norm = atof( pd.getData("max_norm").c_str() );
+    static double keyframe_threshold = atof( pd.getData("keyframe_threshold").c_str() );
+    static double max_norm_lp = atof( pd.getData("max_norm_lp").c_str() );
+    static CAMERA_INTRINSIC_PARAMETERS camera = getDefaultCamera();
+    // 比较f1 和 f2
+    RESULT_OF_PNP result = estimateMotion( f1, f2, camera );
+    if ( result.inliers < min_inliers ) //inliers不够，放弃该帧
+        return NOT_MATCHED;
+    // 计算运动范围是否太大
+    double norm = normofTransform(result.rvec, result.tvec);
+    if ( is_loops == false )
+    {
+        if ( norm >= max_norm )
+            return TOO_FAR_AWAY;   // too far away, may be error
+    }
+    else
+    {
+        if ( norm >= max_norm_lp)
+            return TOO_FAR_AWAY;
+    }
+
+    if ( norm <= keyframe_threshold )
+        return TOO_CLOSE;   // too adjacent frame
+    // 向g2o中增加这个顶点与上一帧联系的边
+    // 顶点部分
+    // 顶点只需设定id即可
+    if (is_loops == false)
+    {
+        g2o::VertexSE3 *v = new g2o::VertexSE3();
+        v->setId( f2.frameID );
+        v->setEstimate( Eigen::Isometry3d::Identity() );
+        opti.addVertex(v);
+    }
+    // 边部分
+    g2o::EdgeSE3* edge = new g2o::EdgeSE3();
+    // 连接此边的两个顶点id
+    edge->setVertex( 0, opti.vertex(f1.frameID ));
+    edge->setVertex( 1, opti.vertex(f2.frameID ));
+    edge->setRobustKernel( new g2o::RobustKernelHuber() );
+    // 信息矩阵
+    Eigen::Matrix<double, 6, 6> information = Eigen::Matrix< double, 6,6 >::Identity();
+    // 信息矩阵是协方差矩阵的逆，表示我们对边的精度的预先估计
+    // 因为pose为6D的，信息矩阵是6*6的阵，假设位置和角度的估计精度均为0.1且互相独立
+    // 那么协方差则为对角为0.01的矩阵，信息阵则为100的矩阵
+    information(0,0) = information(1,1) = information(2,2) = 100;
+    information(3,3) = information(4,4) = information(5,5) = 100;
+    // 也可以将角度设大一些，表示对角度的估计更加准确
+    edge->setInformation( information );
+    // 边的估计即是pnp求解之结果
+    Eigen::Isometry3d T = cvMat2Eigen( result.rvec, result.tvec );
+    // edge->setMeasurement( T );
+    edge->setMeasurement( T.inverse() );
+    // 将此边加入图中
+    opti.addEdge(edge);
+    return KEYFRAME;
 }
