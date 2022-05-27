@@ -31,18 +31,6 @@
 
 std::string root_path = "/home/wangpeng04/work/slam/slam_practice/data";
 
-
-struct Frame{
-// data
-    std::vector<cv::KeyPoint> vkey_pts_;
-    cv::Mat descriptors_;
-    cv::Mat rotate_;
-    cv::Mat trans_;
-    std::vector<cv::Point3f> vkey_pts_3d_visible_;
-    std::vector<int> vkey_pts_3d_visible_idx_;
-};
-
-std::vector<Frame> vframe;
 cv::Mat last_image;
 pcl::PointCloud<pcl::PointXYZRGBA>::Ptr DepthToPointCloud(const cv::Mat &depth, const cv::Mat rgb, const cv::Mat camera_matrix, float sensor_scale) {
    // 
@@ -219,10 +207,10 @@ void LoadData(int img_id, FRAME *frame){
         cv::Mat rgb = cv::imread(root_path + "/rgb_png/"+std::to_string(img_id)+".png", 1);
         frame->img_rgb = rgb.clone();
         frame->img_depth = depth.clone();
-        std::cout<<"-- load rgb data "<<depth.size()<<" type "<<depth.type()<<" "<<rgb.size()<<std::endl;
+        // std::cout<<"-- load rgb data "<<depth.size()<<" type "<<depth.type()<<" "<<rgb.size()<<std::endl;
 }
 
-void PoseEstimate(std::vector<cv::Point2f> keypoints_curr,
+int PoseEstimate(std::vector<cv::Point2f> keypoints_curr,
              std::vector<cv::Point2f> keypoints_last,
              cv::Mat last_depth,
              cv::Mat camera_matrix,
@@ -238,9 +226,12 @@ void PoseEstimate(std::vector<cv::Point2f> keypoints_curr,
         last_kps_3d.push_back(cv::Point3f(xw, yw, zw));
     }
 
-    std::cout<<"-- Pose Estimate "<<std::endl;
+    std::cout<<"-- Pose Estimate "<<keypoints_last.size()<<" "<<keypoints_curr.size()<<std::endl;
+    if (keypoints_curr.size() < 5 || keypoints_last.size() < 5) return -1;
     // pose estimate
-    int ret = cv::solvePnPRansac(last_kps_3d, keypoints_curr, camera_matrix, cv::Mat(), *vec_r, *vec_t);    
+    cv::Mat inliers;
+    int ret = cv::solvePnPRansac(last_kps_3d, keypoints_curr, camera_matrix, cv::Mat(), *vec_r, *vec_t, false, 100, 8.0, 0.99, inliers);  
+    return int(inliers.rows);
 }
 // cvMat2Eigen
 Eigen::Isometry3d cvMat2Eigen( cv::Mat& rvec, cv::Mat& tvec );
@@ -252,9 +243,9 @@ enum CHECK_RESULT {NOT_MATCHED=0, TOO_FAR_AWAY, TOO_CLOSE, KEYFRAME};
 CHECK_RESULT checkKeyframes( FRAME& f1, FRAME& f2, cv::Mat camera_matrix, g2o::SparseOptimizer& opti, bool is_loops=false );
 
 // 检测近距离的回环
-void checkNearbyLoops( vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_matrix, g2o::SparseOptimizer& opti );
+void checkNearbyLoops( std::vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_matrix, g2o::SparseOptimizer& opti );
 // 随机检测回环
-void checkRandomLoops( vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_matrix, g2o::SparseOptimizer& opti );
+void checkRandomLoops( std::vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_matrix, g2o::SparseOptimizer& opti );
 
 int main(int argc, char* argv[]) {
     
@@ -281,6 +272,7 @@ int main(int argc, char* argv[]) {
     frame_last = frame_cur;
     frame_last.img_kpt_desc = img_kpt_desc.clone();
     frame_last.img_kpt.swap(img_kpt);
+    frame_last.frame_id = 1;
 
     *last_point_cloud = *point_cloud;
 
@@ -309,21 +301,14 @@ int main(int argc, char* argv[]) {
     v->setFixed( true ); //第一个顶点固定，不用优化
     globalOptimizer.addVertex( v );
 
-    for(auto img_id = start_index + 1; img_id < 30; ++img_id) {
+    for(auto img_id = start_index + 1; img_id < 200; ++img_id) {
 
 
+        frame_cur.frame_id = img_id;
         frame_last = keyframes.back();
         LoadData(img_id, &frame_cur);
         cloud_type::Ptr point_cloud = DepthToPointCloud(frame_cur.img_depth, frame_cur.img_rgb, camera_matrix, camera_factor);
-        cv::Mat img_kpt_desc;
-        std::vector<cv::KeyPoint> img_kpt;
-        FeaturesDection(frame_cur.img_rgb, &img_kpt_desc, &img_kpt);
-
-
-        std::cout<<"-- cur "<<img_kpt.size()<<" last "<<frame_last.img_kpt.size()<<std::endl;
-        // feature match
-        std::vector<cv::Point2f> keypoints_curr, keypoints_last;
-        FeaturesMatching(img_kpt, img_kpt_desc, frame_last.img_kpt, frame_last.img_kpt_desc, &keypoints_curr, &keypoints_last);
+        FeaturesDection(frame_cur.img_rgb, &frame_cur.img_kpt_desc, &frame_cur.img_kpt);
 
         // check keyframe
         auto result = checkKeyframes(frame_last, frame_cur, camera_matrix, globalOptimizer, false);
@@ -332,18 +317,18 @@ int main(int argc, char* argv[]) {
         {
         case NOT_MATCHED:
             //没匹配上，直接跳过
-            cout<<RED"Not enough inliers."<<endl;
+            cout<<"Not enough inliers."<<endl;
             break;
         case TOO_FAR_AWAY:
             // 太近了，也直接跳
-            cout<<RED"Too far away, may be an error."<<endl;
+            cout<<"Too far away, may be an error."<<endl;
             break;
         case TOO_CLOSE:
             // 太远了，可能出错了
-            cout<<RESET"Too close, not a keyframe"<<endl;
+            cout<<"Too close, not a keyframe"<<endl;
             break;
         case KEYFRAME:
-            cout<<GREEN"This is a new keyframe"<<endl;
+            cout<<"This is a new keyframe"<<endl;
             // 不远不近，刚好
             /**
              * This is important!!
@@ -352,10 +337,10 @@ int main(int argc, char* argv[]) {
              * (very important so I've said three times!)
              */
             // 检测回环
-            if (check_loop_closure)
+            if (true)
             {
-                checkNearbyLoops( keyframes, frame_cur, globalOptimizer );
-                checkRandomLoops( keyframes, frame_cur, globalOptimizer );
+                checkNearbyLoops( keyframes, frame_cur, camera_matrix, globalOptimizer );
+                checkRandomLoops( keyframes, frame_cur, camera_matrix, globalOptimizer );
             }
             keyframes.push_back( frame_cur );
             
@@ -384,14 +369,14 @@ int main(int argc, char* argv[]) {
 
 
         // // point cloud transform
-        // pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_filtered (new pcl::PointCloud<pcl::PointXYZRGBA>());
+        // pcl::PointCloud<pcl::PointXYZRGBA>::Ptr cloud_filte (new pcl::PointCloud<pcl::PointXYZRGBA>());
        
         //  // Create the filtering object
         //  pcl::VoxelGrid<pcl::PointXYZRGBA> sor;
         //  sor.setInputCloud (point_cloud);
         //  sor.setLeafSize (0.3f, 0.3f, 0.3f);
-        //  sor.filter (*cloud_filtered);
-        //  *point_cloud = *cloud_filtered;
+        //  sor.filter (*cloud_filte);
+        //  *point_cloud = *cloud_filte;
 
         // //
         // pcl::PointCloud<pcl::PointXYZRGBA>::Ptr new_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
@@ -411,7 +396,7 @@ int main(int argc, char* argv[]) {
 
         // pcl::io::savePCDFile("point_cloud.pcd", *last_point_cloud);
         // 优化
-    cout<<RESET"optimizing pose graph, vertices: "<<globalOptimizer.vertices().size()<<endl;
+    cout<<"optimizing pose graph, vertices: "<<globalOptimizer.vertices().size()<<endl;
     globalOptimizer.save("./result_before.g2o");
     globalOptimizer.initializeOptimization();
     globalOptimizer.optimize( 100 ); //可以指定优化步数
@@ -430,28 +415,33 @@ int main(int argc, char* argv[]) {
 
 double normofTransform( cv::Mat rvec, cv::Mat tvec )
 {
-    return fabs(min(cv::norm(rvec), 2*M_PI-cv::norm(rvec)))+ fabs(cv::norm(tvec));
+    return fabs(MIN(cv::norm(rvec), 2*M_PI-cv::norm(rvec)))+ fabs(cv::norm(tvec));
 }
 
 
 CHECK_RESULT checkKeyframes( FRAME& frame_last, FRAME& frame_cur, cv::Mat camera_matrix, g2o::SparseOptimizer& opti, bool is_loops)
 {
-    static ParameterReader pd;
-    static int min_inliers = 10;//atoi( pd.getData("min_inliers").c_str() );
-    static double max_norm = 10;//atof( pd.getData("max_norm").c_str() );
-    static double keyframe_threshold = 10;//atof( pd.getData("keyframe_threshold").c_str() );
-    static double max_norm_lp = atof( pd.getData("max_norm_lp").c_str() );
-    static CAMERA_INTRINSIC_PARAMETERS camera = getDefaultCamera();
+    // static ParameterReader pd;
+    static int min_inliers = 5;//atoi( pd.getData("min_inliers").c_str() );
+    static double max_norm = 0.2;//atof( pd.getData("max_norm").c_str() );
+    static double keyframe_threshold = 0.1;//atof( pd.getData("keyframe_threshold").c_str() );
+    static double max_norm_lp = 2.0;//atof( pd.getData("max_norm_lp").c_str() );
+    // static CAMERA_INTRINSIC_PARAMETERS camera = getDefaultCamera();
     // 比较f1 和 f2
-    RESULT_OF_PNP result = estimateMotion( f1, f2, camera );
+    // RESULT_OF_PNP result = estimateMotion( f1, f2, camera );
 
-    cv::Mat R, T;
-    auto inliers = PoseEstimate(frame_last.img_kpt, frame_cur.img_kpt, frame_last.img_depth, camera_matrix, &R, &T);
+        // feature match
+    std::vector<cv::Point2f> keypoints_curr, keypoints_last;
+    FeaturesMatching(frame_cur.img_kpt, frame_cur.img_kpt_desc, frame_last.img_kpt, frame_last.img_kpt_desc, &keypoints_curr, &keypoints_last);
+
+    cv::Mat rvec, tvec;
+    int inliers = PoseEstimate(keypoints_last, keypoints_curr, frame_last.img_depth, camera_matrix, &rvec, &tvec);
+    std::cout<<"-- "<<frame_last.frame_id<<" "<<frame_cur.frame_id<<" "<<rvec<<" "<<tvec<<std::endl;
     if (inliers < min_inliers ) //inliers不够，放弃该帧
         return NOT_MATCHED;
 
     // check large motion or small motion
-    double norm = normofTransform(R, T);
+    double norm = normofTransform(rvec, tvec);std::cout<<"-- norm "<<norm<<std::endl;
     if ( is_loops == false )
     {
         if ( norm >= max_norm )
@@ -478,8 +468,8 @@ CHECK_RESULT checkKeyframes( FRAME& frame_last, FRAME& frame_cur, cv::Mat camera
     // 边部分
     g2o::EdgeSE3* edge = new g2o::EdgeSE3();
     // 连接此边的两个顶点id
-    edge->setVertex( 0, opti.vertex(f1.frameID ));
-    edge->setVertex( 1, opti.vertex(f2.frameID ));
+    edge->setVertex( 0, opti.vertex(frame_last.frame_id ));
+    edge->setVertex( 1, opti.vertex(frame_cur.frame_id ));
     edge->setRobustKernel( new g2o::RobustKernelHuber() );
     // 信息矩阵
     Eigen::Matrix<double, 6, 6> information = Eigen::Matrix< double, 6,6 >::Identity();
@@ -491,7 +481,7 @@ CHECK_RESULT checkKeyframes( FRAME& frame_last, FRAME& frame_cur, cv::Mat camera
     // 也可以将角度设大一些，表示对角度的估计更加准确
     edge->setInformation( information );
     // 边的估计即是pnp求解之结果
-    Eigen::Isometry3d T = cvMat2Eigen( result.rvec, result.tvec );
+    Eigen::Isometry3d T = cvMat2Eigen(rvec, tvec);
     // edge->setMeasurement( T );
     edge->setMeasurement( T.inverse() );
     // 将此边加入图中
@@ -519,10 +509,10 @@ Eigen::Isometry3d cvMat2Eigen( cv::Mat& rvec, cv::Mat& tvec )
     return T;
 }
 
-void checkNearbyLoops( vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_matrix,g2o::SparseOptimizer& opti )
+void checkNearbyLoops( std::vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_matrix,g2o::SparseOptimizer& opti )
 {
-    static ParameterReader pd;
-    static int nearby_loops = atoi( pd.getData("nearby_loops").c_str() );
+    // static ParameterReader pd;
+    static int nearby_loops = 5;//atoi( pd.getData("nearby_loops").c_str() );
     
     // 就是把currFrame和 frames里末尾几个测一遍
     if ( frames.size() <= nearby_loops )
@@ -530,7 +520,7 @@ void checkNearbyLoops( vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_m
         // no enough keyframes, check everyone
         for (size_t i=0; i<frames.size(); i++)
         {
-            checkKeyframes( frames[i], currFrame, opti, true );
+            checkKeyframes( frames[i], currFrame, camera_matrix, opti, true );
         }
     }
     else
@@ -543,10 +533,10 @@ void checkNearbyLoops( vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_m
     }
 }
 
-void checkRandomLoops( vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_matrix, g2o::SparseOptimizer& opti )
+void checkRandomLoops( std::vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_matrix, g2o::SparseOptimizer& opti )
 {
-    static ParameterReader pd;
-    static int random_loops = atoi( pd.getData("random_loops").c_str() );
+    // static ParameterReader pd;
+    static int random_loops = 5;//atoi( pd.getData("random_loops").c_str() );
     srand( (unsigned int) time(NULL) );
     // 随机取一些帧进行检测
     
@@ -555,7 +545,7 @@ void checkRandomLoops( vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_m
         // no enough keyframes, check everyone
         for (size_t i=0; i<frames.size(); i++)
         {
-            checkKeyframes( frames[i], currFrame, opti, true );
+            checkKeyframes( frames[i], currFrame, camera_matrix, opti, true );
         }
     }
     else

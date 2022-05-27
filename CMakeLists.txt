@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 2.6)
 project(slam_demo)
-cmake_policy(SET CMP0074 NEW)
+#cmake_policy(SET CMP0074 NEW)
 
 SET(CMAKE_CXX_COMPILER "g++")
 set( CMAKE_CXX_STANDARD 14)
