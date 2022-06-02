@@ -13,6 +13,7 @@
 #include <pcl/common/transforms.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/registration/icp.h>
+#include <pcl/filters/passthrough.h>
 
 // g2o
 #include "g2o/core/block_solver.h"
@@ -39,13 +40,15 @@ pcl::PointCloud<pcl::PointXYZRGBA>::Ptr DepthToPointCloud(const cv::Mat &depth, 
    float fx = camera_matrix.at<float>(0,0);
    float fy = camera_matrix.at<float>(1,1);
 
+//    std::cout<<" -- "<<cx<<" "<<cy<<" "<<fx<<" "<<fy<<" "<<sensor_scale<<std::endl;
+
    using cloud_type = pcl::PointCloud<pcl::PointXYZRGBA>;
    cloud_type::Ptr point_cloud (new cloud_type);
    for(auto y = 0; y < depth.rows; ++y) {
        const ushort *pd = depth.ptr<ushort>(y);
        const cv::Vec3b* pc = rgb.ptr<cv::Vec3b>(y);
        for(auto x = 0; x < depth.cols; ++x) {
-           float zw = pd[x] * sensor_scale;
+           float zw = pd[x] * 1.0 * sensor_scale;
            float xw = (x - cx) * zw/fx;
            float yw = (y - cy) * zw/fy;
 
@@ -63,9 +66,10 @@ pcl::PointCloud<pcl::PointXYZRGBA>::Ptr DepthToPointCloud(const cv::Mat &depth, 
    }
    point_cloud->height = 1;
    point_cloud->width = point_cloud->size();
+   point_cloud->is_dense = false;
    return point_cloud;
 }
-const double camera_factor = 1000;
+const double camera_factor = 1000.0;
 const double camera_cx = 325.5;
 const double camera_cy = 253.5;
 const double camera_fx = 518.0;
@@ -187,14 +191,14 @@ void FeaturesMatching(std::vector<cv::KeyPoint> img_kpt1, const cv::Mat img_kpt_
             if ( dist > max_dist ) max_dist = dist;
         }
 
-        std::cout<<"-- matches "<<matches.size()<<" min_dist "<<min_dist<<" max_dist "<<max_dist<<std::endl;
+        // std::cout<<"-- matches "<<matches.size()<<" min_dist "<<min_dist<<" max_dist "<<max_dist<<std::endl;
         std::vector<cv::DMatch> good_matches;
 
         // 
         for ( int i = 0; i < matches.size(); i++)
         {
             if (matches[i][0].distance >0.6 * matches[i][1].distance) continue;
-            if(matches[i][0].distance <= 5 * min_dist)
+            if(matches[i][0].distance <= 10 * min_dist)
             {
                 good_matches.push_back(matches[i][0]);
                 img_kpt1_match->push_back(img_kpt1[matches[i][0].queryIdx].pt);
@@ -227,7 +231,7 @@ int PoseEstimate(std::vector<cv::Point2f> keypoints_curr,
     }
 
     std::cout<<"-- Pose Estimate "<<keypoints_last.size()<<" "<<keypoints_curr.size()<<std::endl;
-    if (keypoints_curr.size() < 5 || keypoints_last.size() < 5) return -1;
+    if (keypoints_curr.size() <= 5 || keypoints_last.size() <= 5) return -1;
     // pose estimate
     cv::Mat inliers;
     int ret = cv::solvePnPRansac(last_kps_3d, keypoints_curr, camera_matrix, cv::Mat(), *vec_r, *vec_t, false, 100, 8.0, 0.99, inliers);  
@@ -247,6 +251,9 @@ void checkNearbyLoops( std::vector<FRAME>& frames, FRAME& currFrame, cv::Mat cam
 // 随机检测回环
 void checkRandomLoops( std::vector<FRAME>& frames, FRAME& currFrame, cv::Mat camera_matrix, g2o::SparseOptimizer& opti );
 
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr last_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
+
+
 int main(int argc, char* argv[]) {
     
     using cloud_type = pcl::PointCloud<pcl::PointXYZRGBA>;
@@ -258,7 +265,6 @@ int main(int argc, char* argv[]) {
     // pcl::visualization::CloudViewer* cloud_viewer(new pcl::visualization::CloudViewer("viewer"));
     FRAME frame_cur, frame_last;
     std::vector<cv::KeyPoint> last_kps;
-    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr last_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
 
 
 
@@ -274,7 +280,7 @@ int main(int argc, char* argv[]) {
     frame_last.img_kpt.swap(img_kpt);
     frame_last.frame_id = 1;
 
-    *last_point_cloud = *point_cloud;
+    // *last_point_cloud = *point_cloud;
 
     std::vector<FRAME> keyframes;
     keyframes.push_back(frame_last);
@@ -301,13 +307,13 @@ int main(int argc, char* argv[]) {
     v->setFixed( true ); //第一个顶点固定，不用优化
     globalOptimizer.addVertex( v );
 
-    for(auto img_id = start_index + 1; img_id < 200; ++img_id) {
+    for(auto img_id = start_index + 1; img_id < 100; ++img_id) {
 
 
         frame_cur.frame_id = img_id;
         frame_last = keyframes.back();
         LoadData(img_id, &frame_cur);
-        cloud_type::Ptr point_cloud = DepthToPointCloud(frame_cur.img_depth, frame_cur.img_rgb, camera_matrix, camera_factor);
+        // cloud_type::Ptr point_cloud = DepthToPointCloud(frame_cur.img_depth, frame_cur.img_rgb, camera_matrix, camera_factor);
         FeaturesDection(frame_cur.img_rgb, &frame_cur.img_kpt_desc, &frame_cur.img_kpt);
 
         // check keyframe
@@ -396,17 +402,60 @@ int main(int argc, char* argv[]) {
 
         // pcl::io::savePCDFile("point_cloud.pcd", *last_point_cloud);
         // 优化
-    cout<<"optimizing pose graph, vertices: "<<globalOptimizer.vertices().size()<<endl;
-    globalOptimizer.save("./result_before.g2o");
-    globalOptimizer.initializeOptimization();
-    globalOptimizer.optimize( 100 ); //可以指定优化步数
-    globalOptimizer.save( "./result_after.g2o" );
-    cout<<"Optimization done."<<endl;
+    // cout<<"optimizing pose graph, vertices: "<<globalOptimizer.vertices().size()<<endl;
+    // globalOptimizer.save("./result_before.g2o");
+    // globalOptimizer.initializeOptimization();
+    // globalOptimizer.optimize( 100 ); //可以指定优化步数
+    // globalOptimizer.save( "./result_after.g2o" );
+    // cout<<"Optimization done."<<endl;
 
 
-    // show
 
-    // pnp
+    // 拼接点云地图
+    cout<<"saving the point cloud map..."<<endl;
+    cloud_type::Ptr output ( new cloud_type() ); //全局地图
+    cloud_type::Ptr tmp ( new cloud_type() );
+
+    pcl::VoxelGrid<pcl::PointXYZRGBA> voxel; // 网格滤波器，调整地图分辨率
+    pcl::PassThrough<pcl::PointXYZRGBA> pass; // z方向区间滤波器，由于rgbd相机的有效深度区间有限，把太远的去掉
+    pass.setFilterFieldName("z");
+    pass.setFilterLimits( 0.0, 4.0 ); //4m以上就不要了
+
+    double gridsize = 0.01;//atof( pd.getData( "voxel_grid" ).c_str() ); //分辨图可以在parameters.txt里调
+    voxel.setLeafSize( gridsize, gridsize, gridsize );
+
+    for (size_t i=0; i<keyframes.size(); i++)
+    {
+        // 从g2o里取出一帧
+        g2o::VertexSE3* vertex = dynamic_cast<g2o::VertexSE3*>(globalOptimizer.vertex( keyframes[i].frame_id));
+        Eigen::Isometry3d pose = vertex->estimate(); //该帧优化后的位姿
+        cloud_type::Ptr newCloud = DepthToPointCloud(keyframes[i].img_depth, keyframes[i].img_rgb, camera_matrix, camera_factor); //转成点云
+        // 以下是滤波
+        voxel.setInputCloud( newCloud );
+        voxel.filter( *tmp );
+        // pcl::io::savePCDFile( "./result_0.pcd", *tmp );
+
+        // pass.setInputCloud( tmp );
+        // pass.filter( *newCloud );
+        //  std::cout<<"-- pose "<<pose.matrix()<<std::endl;
+        // pcl::io::savePCDFile( "./result_1.pcd", *newCloud );
+        // 把点云变换后加入全局地图中
+        pcl::transformPointCloud( *output, *output, pose.matrix() );
+        // pcl::io::savePCDFile( "./result_2.pcd", *tmp );
+
+        *output += *tmp;
+        tmp->clear();
+        newCloud->clear();
+    }
+
+    voxel.setInputCloud( output );
+    voxel.filter( *tmp );
+    //存储
+    pcl::io::savePCDFile( "./result.pcd", *tmp );
+    pcl::io::savePCDFile( "./last_point_cloud.pcd", *last_point_cloud );
+    
+    cout<<"Final map is saved."<<endl;
+    return 0;
 
 
     return 1;
@@ -436,12 +485,13 @@ CHECK_RESULT checkKeyframes( FRAME& frame_last, FRAME& frame_cur, cv::Mat camera
 
     cv::Mat rvec, tvec;
     int inliers = PoseEstimate(keypoints_last, keypoints_curr, frame_last.img_depth, camera_matrix, &rvec, &tvec);
-    std::cout<<"-- "<<frame_last.frame_id<<" "<<frame_cur.frame_id<<" "<<rvec<<" "<<tvec<<std::endl;
+    // std::cout<<"-- "<<frame_last.frame_id<<" "<<frame_cur.frame_id<<" "<<rvec<<" "<<tvec<<" inliers "<<inliers<< std::endl;
     if (inliers < min_inliers ) //inliers不够，放弃该帧
         return NOT_MATCHED;
 
     // check large motion or small motion
     double norm = normofTransform(rvec, tvec);std::cout<<"-- norm "<<norm<<std::endl;
+    if (isnan(norm)) { std::cout<<" is nan, return "; return TOO_CLOSE;}
     if ( is_loops == false )
     {
         if ( norm >= max_norm )
@@ -486,6 +536,15 @@ CHECK_RESULT checkKeyframes( FRAME& frame_last, FRAME& frame_cur, cv::Mat camera
     edge->setMeasurement( T.inverse() );
     // 将此边加入图中
     opti.addEdge(edge);
+
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr point_cloud = DepthToPointCloud(frame_last.img_depth, frame_last.img_rgb, camera_matrix, camera_factor);
+
+        //
+    pcl::PointCloud<pcl::PointXYZRGBA>::Ptr new_point_cloud(new pcl::PointCloud<pcl::PointXYZRGBA>());
+    pcl::transformPointCloud(*last_point_cloud, *new_point_cloud, T.matrix());
+    *point_cloud += *new_point_cloud;
+    *last_point_cloud = *point_cloud;
+
     return KEYFRAME;
 }
 
